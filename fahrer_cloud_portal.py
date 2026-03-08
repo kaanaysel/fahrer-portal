@@ -520,8 +520,14 @@ def setup_db():
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
+            # alte falsche Tabellen komplett löschen
+            cur.execute("DROP TABLE IF EXISTS documents CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS month_data CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS drivers CASCADE;")
+
+            # richtige Tabellen neu erstellen
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS drivers(
+                CREATE TABLE drivers(
                     id SERIAL PRIMARY KEY,
                     external_driver_id INTEGER UNIQUE NOT NULL,
                     name TEXT NOT NULL,
@@ -535,7 +541,7 @@ def setup_db():
             """)
 
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS month_data(
+                CREATE TABLE month_data(
                     id SERIAL PRIMARY KEY,
                     driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
                     year INTEGER NOT NULL,
@@ -556,7 +562,7 @@ def setup_db():
             """)
 
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS documents(
+                CREATE TABLE documents(
                     id SERIAL PRIMARY KEY,
                     driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
                     year INTEGER NOT NULL,
@@ -570,7 +576,7 @@ def setup_db():
 
         conn.commit()
 
-    return {"ok": True, "status": "database tables created"}
+    return {"ok": True, "status": "database reset and recreated"}
 if __name__ == "__main__":
     init_db()
     ensure_driver_columns()
