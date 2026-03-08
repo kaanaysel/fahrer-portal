@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import psycopg
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -518,53 +519,61 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=False)
 @app.route("/setup-db")
 def setup_db():
-    conn = get_db()
-    cur = conn.cursor()
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        return {"ok": False, "error": "DATABASE_URL fehlt"}, 500
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS drivers (
-        id SERIAL PRIMARY KEY,
-        external_driver_id INTEGER UNIQUE,
-        name TEXT,
-        username TEXT,
-        password_hash TEXT,
-        starting_balance DOUBLE PRECISION DEFAULT 0,
-        is_active BOOLEAN DEFAULT TRUE
-    );
-    """)
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS drivers (
+                    id SERIAL PRIMARY KEY,
+                    external_driver_id INTEGER UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
+                    username TEXT,
+                    password_hash TEXT,
+                    starting_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS month_data (
-        id SERIAL PRIMARY KEY,
-        external_driver_id INTEGER,
-        year INTEGER,
-        month INTEGER,
-        worked_hours DOUBLE PRECISION,
-        payroll_hours DOUBLE PRECISION,
-        v_hours DOUBLE PRECISION,
-        bonus_hours DOUBLE PRECISION,
-        bonus_comment TEXT,
-        deduction_hours DOUBLE PRECISION,
-        deduction_comment TEXT,
-        difference DOUBLE PRECISION,
-        previous_balance DOUBLE PRECISION,
-        new_balance DOUBLE PRECISION
-    );
-    """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS month_data (
+                    id SERIAL PRIMARY KEY,
+                    external_driver_id INTEGER NOT NULL,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    worked_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    payroll_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    v_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    bonus_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    bonus_comment TEXT NOT NULL DEFAULT '',
+                    deduction_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    deduction_comment TEXT NOT NULL DEFAULT '',
+                    difference DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    previous_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    new_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE (external_driver_id, year, month)
+                );
+            """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS documents (
-        id SERIAL PRIMARY KEY,
-        external_driver_id INTEGER,
-        year INTEGER,
-        month INTEGER,
-        file_name TEXT,
-        file_path TEXT
-    );
-    """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id SERIAL PRIMARY KEY,
+                    external_driver_id INTEGER NOT NULL,
+                    year INTEGER NOT NULL,
+                    month INTEGER NOT NULL,
+                    file_name TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    uploaded_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE (external_driver_id, year, month)
+                );
+            """)
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        conn.commit()
 
-    return {"status": "database tables created"}
+    return {"ok": True, "status": "database tables created"}
