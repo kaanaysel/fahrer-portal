@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -58,10 +57,8 @@ button.primary, .btn.primary { background:var(--blue); color:white; border-color
 @media (max-width: 800px) { .wrapper { padding:12px; } .title { font-size: 1.65rem; } }
 """
 
-MONATE = {
-    1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni",
-    7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
-}
+MONATE = {1: "Januar", 2: "Februar", 3: "März", 4: "April", 5: "Mai", 6: "Juni", 7: "Juli", 8: "August", 9: "September", 10: "Oktober", 11: "November", 12: "Dezember"}
+
 
 def fmt_hours(value: float) -> str:
     return f"{float(value):.2f}".replace(".", ",") + " Std."
@@ -71,18 +68,21 @@ def fmt_signed(value: float) -> str:
     return f"{float(value):+.2f}".replace(".", ",")
 
 
-def get_month_data(conn: sqlite3.Connection, driver_db_id: int, year: int, month: int) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM monthly_data WHERE driver_id=? AND year=? AND month=?",
-        (driver_db_id, year, month),
-    ).fetchone()
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def get_driver_by_external_id(conn: sqlite3.Connection, external_driver_id: int) -> Optional[sqlite3.Row]:
-    return conn.execute(
-        "SELECT * FROM drivers WHERE external_driver_id=?",
-        (external_driver_id,),
-    ).fetchone()
+def compute_difference(worked: float, payroll: float, v_hours: float, bonus: float, deduction: float) -> float:
+    return round(float(worked) - (float(payroll) + abs(float(v_hours))) + float(bonus) + float(deduction), 2)
+
+
+def slugify(text: str) -> str:
+    repl = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "Ä": "ae", "Ö": "oe", "Ü": "ue"}
+    for a, b in repl.items():
+        text = text.replace(a, b)
+    s = re.sub(r"[^a-zA-Z0-9._-]+", ".", text.strip().lower())
+    s = re.sub(r"\.+", ".", s).strip(".")
+    return s or "fahrer"
 
 
 def ensure_paths() -> None:
@@ -93,6 +93,42 @@ def ensure_paths() -> None:
 def remove_tree_if_exists(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
+
+
+def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def migrate_monthly_data(conn: sqlite3.Connection) -> None:
+    ensure_column(conn, "monthly_data", "bonus_hours", "REAL NOT NULL DEFAULT 0")
+    ensure_column(conn, "monthly_data", "bonus_comment", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "monthly_data", "deduction_hours", "REAL NOT NULL DEFAULT 0")
+    ensure_column(conn, "monthly_data", "deduction_comment", "TEXT NOT NULL DEFAULT ''")
+    rows = conn.execute(
+        "SELECT id, worked_hours, payroll_hours, v_hours, adjustment_hours, comment, bonus_hours, bonus_comment, deduction_hours, deduction_comment FROM monthly_data"
+    ).fetchall()
+    for row in rows:
+        adj = float(row["adjustment_hours"] or 0.0)
+        bonus = float(row["bonus_hours"] or 0.0)
+        deduction = float(row["deduction_hours"] or 0.0)
+        comment = (row["comment"] or "").strip() if "comment" in row.keys() else ""
+        bonus_comment = (row["bonus_comment"] or "").strip()
+        deduction_comment = (row["deduction_comment"] or "").strip()
+        if bonus == 0 and deduction == 0 and adj != 0:
+            bonus = adj if adj > 0 else 0.0
+            deduction = adj if adj < 0 else 0.0
+            if bonus > 0 and not bonus_comment:
+                bonus_comment = comment
+            if deduction < 0 and not deduction_comment:
+                deduction_comment = comment
+        diff = compute_difference(row["worked_hours"], row["payroll_hours"], row["v_hours"], bonus, deduction)
+        conn.execute(
+            "UPDATE monthly_data SET bonus_hours=?, bonus_comment=?, deduction_hours=?, deduction_comment=?, difference_hours=? WHERE id=?",
+            (bonus, bonus_comment, deduction, deduction_comment, diff, int(row["id"])),
+        )
+    conn.commit()
 
 
 def db_conn() -> sqlite3.Connection:
@@ -145,21 +181,8 @@ def db_conn() -> sqlite3.Connection:
         );
         """
     )
-    conn.commit()
+    migrate_monthly_data(conn)
     return conn
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def slugify(text: str) -> str:
-    repl = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "Ä": "ae", "Ö": "oe", "Ü": "ue"}
-    for a, b in repl.items():
-        text = text.replace(a, b)
-    s = re.sub(r"[^a-zA-Z0-9._-]+", ".", text.strip().lower())
-    s = re.sub(r"\.+", ".", s).strip(".")
-    return s or "fahrer"
 
 
 def make_unique_username(conn: sqlite3.Connection, username: str, exclude_id: Optional[int] = None) -> str:
@@ -199,6 +222,14 @@ def get_current_driver(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     return conn.execute("SELECT * FROM drivers WHERE id=? AND is_active=1", (driver_id,)).fetchone()
 
 
+def get_month_data(conn: sqlite3.Connection, driver_db_id: int, year: int, month: int) -> Optional[sqlite3.Row]:
+    return conn.execute("SELECT * FROM monthly_data WHERE driver_id=? AND year=? AND month=?", (driver_db_id, year, month)).fetchone()
+
+
+def get_driver_by_external_id(conn: sqlite3.Connection, external_driver_id: int) -> Optional[sqlite3.Row]:
+    return conn.execute("SELECT * FROM drivers WHERE external_driver_id=?", (external_driver_id,)).fetchone()
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "app": APP_NAME}
@@ -206,9 +237,7 @@ def health():
 
 @app.route("/", methods=["GET"])
 def index():
-    if session.get("driver_db_id"):
-        return redirect(url_for("years"))
-    return redirect(url_for("login"))
+    return redirect(url_for("years")) if session.get("driver_db_id") else redirect(url_for("login"))
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -225,13 +254,11 @@ def login():
                 session["driver_db_id"] = int(row["id"])
                 session["driver_name"] = row["name"]
                 return redirect(url_for("years"))
-
     return render_template_string(
         """
         <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
         <title>{{ app_name }} – Login</title><style>{{ css }}</style></head><body>
-        <div class="wrapper">
-          <div class="topbar"><div class="title">{{ app_name }}</div></div>
+        <div class="wrapper"><div class="topbar"><div class="title">{{ app_name }}</div></div>
           <div class="card" style="max-width:520px;margin:40px auto;">
             <h2 style="margin-top:0;">Fahrer-Login</h2>
             {% if error %}<div class="error">{{ error }}</div>{% endif %}
@@ -240,13 +267,11 @@ def login():
               <label style="margin-top:12px;">Passwort</label><input name="password" type="password" autocomplete="current-password" required>
               <button class="primary" type="submit" style="margin-top:14px;">Einloggen</button>
             </form>
-            <p class="note">Nach dem Login siehst du nur deine eigenen PDFs.</p>
+            <p class="note">Nach dem Login siehst du nur deine eigenen Daten.</p>
           </div>
         </div></body></html>
         """,
-        app_name=APP_NAME,
-        css=BASE_CSS,
-        error=error,
+        app_name=APP_NAME, css=BASE_CSS, error=error,
     )
 
 
@@ -270,31 +295,13 @@ def years():
         ).fetchall()
     return render_template_string(
         """
-        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>{{ app_name }}</title><style>{{ css }}</style></head><body>
-        <div class="wrapper">
-          <div class="topbar">
-            <div><div class="title">{{ app_name }}</div><div class="note">Angemeldet als <span class="badge">{{ driver_name }}</span></div></div>
-            <a class="btn" style="width:auto;padding:10px 14px;" href="{{ url_for('logout') }}">Logout</a>
-          </div>
-          <div class="card">
-            <h2 style="margin-top:0;">Deine Jahre</h2>
-            {% if years %}
-            <div class="month-list">
-              {% for y in years %}
-              <a class="month-item" href="{{ url_for('months_for_year', year=y['year']) }}"><strong>{{ y['year'] }}</strong>{{ y['cnt'] }} PDF(s)</a>
-              {% endfor %}
-            </div>
-            {% else %}
-            <p>Noch keine PDFs vorhanden.</p>
-            {% endif %}
-          </div>
-        </div></body></html>
+        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ app_name }}</title><style>{{ css }}</style></head><body>
+        <div class="wrapper"><div class="topbar"><div><div class="title">{{ app_name }}</div><div class="note">Angemeldet als <span class="badge">{{ driver_name }}</span></div></div><a class="btn" style="width:auto;padding:10px 14px;" href="{{ url_for('logout') }}">Logout</a></div>
+          <div class="card"><h2 style="margin-top:0;">Deine Jahre</h2>
+            {% if years %}<div class="month-list">{% for y in years %}<a class="month-item" href="{{ url_for('months_for_year', year=y['year']) }}"><strong>{{ y['year'] }}</strong>{{ y['cnt'] }} PDF(s)</a>{% endfor %}</div>{% else %}<p>Noch keine PDFs vorhanden.</p>{% endif %}
+          </div></div></body></html>
         """,
-        app_name=APP_NAME,
-        css=BASE_CSS,
-        driver_name=session.get("driver_name", ""),
-        years=year_rows,
+        app_name=APP_NAME, css=BASE_CSS, driver_name=session.get("driver_name", ""), years=year_rows,
     )
 
 
@@ -312,43 +319,13 @@ def months_for_year(year: int):
         ).fetchall()
     return render_template_string(
         """
-        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>{{ app_name }}</title><style>{{ css }}</style></head><body>
-        <div class="wrapper">
-          <div class="topbar">
-            <div><div class="title">{{ app_name }}</div><div class="note">{{ driver_name }} · Jahr {{ year }}</div></div>
-            <div class="actions">
-              <a class="btn" href="{{ url_for('years') }}">Zurück</a>
-              <a class="btn" href="{{ url_for('logout') }}">Logout</a>
-            </div>
-          </div>
-          <div class="card">
-            <h2 style="margin-top:0;">Deine PDFs für {{ year }}</h2>
-            {% if docs %}
-            <div class="month-list">
-              {% for d in docs %}
-              <div class="month-item">
-                <strong>{{ months[d['month']] }} {{ d['year'] }}</strong>
-                <div class="note" style="margin-bottom:10px;">Datei: {{ d['original_filename'] }}</div>
-                <div class="actions">
-                  <a class="btn" href="{{ url_for('month_detail', year=d['year'], month=d['month']) }}">Details ansehen</a>
-                  <a class="btn primary" href="{{ url_for('download_pdf', document_id=d['id'], v=d['uploaded_at']) }}">PDF öffnen</a>
-                </div>
-              </div>
-              {% endfor %}
-            </div>
-            {% else %}
-            <p>Für dieses Jahr sind noch keine PDFs vorhanden.</p>
-            {% endif %}
-          </div>
-        </div></body></html>
+        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ app_name }}</title><style>{{ css }}</style></head><body>
+        <div class="wrapper"><div class="topbar"><div><div class="title">{{ app_name }}</div><div class="note">{{ driver_name }} · Jahr {{ year }}</div></div><div class="actions"><a class="btn" href="{{ url_for('years') }}">Zurück</a><a class="btn" href="{{ url_for('logout') }}">Logout</a></div></div>
+          <div class="card"><h2 style="margin-top:0;">Deine PDFs für {{ year }}</h2>
+          {% if docs %}<div class="month-list">{% for d in docs %}<div class="month-item"><strong>{{ months[d['month']] }} {{ d['year'] }}</strong><div class="note" style="margin-bottom:10px;">Datei: {{ d['original_filename'] }}</div><div class="actions"><a class="btn" href="{{ url_for('month_detail', year=d['year'], month=d['month']) }}">Details ansehen</a><a class="btn primary" href="{{ url_for('download_pdf', document_id=d['id'], v=d['uploaded_at']) }}">PDF öffnen</a></div></div>{% endfor %}</div>{% else %}<p>Für dieses Jahr sind noch keine PDFs vorhanden.</p>{% endif %}
+          </div></div></body></html>
         """,
-        app_name=APP_NAME,
-        css=BASE_CSS,
-        driver_name=session.get("driver_name", ""),
-        year=year,
-        docs=docs,
-        months=MONATE,
+        app_name=APP_NAME, css=BASE_CSS, driver_name=session.get("driver_name", ""), year=year, docs=docs, months=MONATE,
     )
 
 
@@ -360,62 +337,33 @@ def month_detail(year: int, month: int):
         if not driver:
             session.clear()
             return redirect(url_for("login"))
-        doc = conn.execute(
-            "SELECT * FROM documents WHERE driver_id=? AND year=? AND month=?",
-            (driver["id"], year, month),
-        ).fetchone()
+        doc = conn.execute("SELECT * FROM documents WHERE driver_id=? AND year=? AND month=?", (driver["id"], year, month)).fetchone()
         data_row = get_month_data(conn, int(driver["id"]), year, month)
     if not doc and not data_row:
         abort(404)
     return render_template_string(
         """
-        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>{{ app_name }}</title><style>{{ css }}</style></head><body>
-        <div class="wrapper">
-          <div class="topbar">
-            <div><div class="title">{{ app_name }}</div><div class="note">{{ driver_name }} · {{ month_name }} {{ year }}</div></div>
-            <div class="actions">
-              <a class="btn" href="{{ url_for('months_for_year', year=year) }}">Zurück</a>
-              <a class="btn" href="{{ url_for('logout') }}">Logout</a>
-            </div>
-          </div>
-
-          <div class="card" style="margin-bottom:16px;">
-            <h2 style="margin-top:0;">Monatsdetails</h2>
-            {% if data_row %}
+        <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ app_name }}</title><style>{{ css }}</style></head><body>
+        <div class="wrapper"><div class="topbar"><div><div class="title">{{ app_name }}</div><div class="note">{{ driver_name }} · {{ month_name }} {{ year }}</div></div><div class="actions"><a class="btn" href="{{ url_for('months_for_year', year=year) }}">Zurück</a><a class="btn" href="{{ url_for('logout') }}">Logout</a></div></div>
+          <div class="card" style="margin-bottom:16px;"><h2 style="margin-top:0;">Monatsdetails</h2>
+          {% if data_row %}
             <div class="grid grid-2">
-              <div><label>Tatsächliche Arbeitsstunden</label><div class="note">{{ fmt_hours(data_row['worked_hours']) }}</div></div>
+              <div><label>Stunden</label><div class="note">{{ fmt_hours(data_row['worked_hours']) }}</div></div>
               <div><label>Abrechnung</label><div class="note">{{ fmt_hours(data_row['payroll_hours']) }}</div></div>
               <div><label>V</label><div class="note">{{ fmt_hours(data_row['v_hours']) }}</div></div>
-              <div><label>Sonstige Abzüge/Zuschüsse</label><div class="note">{{ fmt_signed(data_row['adjustment_hours']) }}</div></div>
+              <div><label>Zuschüsse</label><div class="note">{{ fmt_hours(data_row['bonus_hours']) }}</div></div>
+              <div><label>Kommentar Zuschuss</label><div class="note">{{ data_row['bonus_comment'] or '-' }}</div></div>
+              <div><label>Abzüge</label><div class="note">{{ fmt_hours(data_row['deduction_hours']) }}</div></div>
+              <div><label>Kommentar Abzug</label><div class="note">{{ data_row['deduction_comment'] or '-' }}</div></div>
               <div><label>Differenz</label><div class="note">{{ fmt_signed(data_row['difference_hours']) }}</div></div>
-              <div><label>Aktuelles Saldo</label><div class="note">{{ fmt_signed(data_row['previous_balance']) }}</div></div>
-              <div><label>Neues Saldo</label><div class="note">{{ fmt_signed(data_row['new_balance']) }}</div></div>
-              <div><label>Kommentar</label><div class="note">{{ data_row['comment'] or '-' }}</div></div>
+              <div><label>Aktueller Stand</label><div class="note">{{ fmt_signed(data_row['previous_balance']) }}</div></div>
+              <div><label>Neuer Stand</label><div class="note">{{ fmt_signed(data_row['new_balance']) }}</div></div>
             </div>
-            {% else %}
-            <p>Noch keine Detaildaten vorhanden.</p>
-            {% endif %}
-          </div>
-
-          {% if doc %}
-          <div class="card">
-            <h2 style="margin-top:0;">PDF</h2>
-            <a class="btn primary" style="width:auto;padding:10px 14px;" href="{{ url_for('download_pdf', document_id=doc['id'], v=doc['uploaded_at']) }}">PDF öffnen</a>
-          </div>
-          {% endif %}
+          {% else %}<p>Noch keine Detaildaten vorhanden.</p>{% endif %}</div>
+          {% if doc %}<div class="card"><h2 style="margin-top:0;">PDF</h2><a class="btn primary" style="width:auto;padding:10px 14px;" href="{{ url_for('download_pdf', document_id=doc['id'], v=doc['uploaded_at']) }}">PDF öffnen</a></div>{% endif %}
         </div></body></html>
         """,
-        app_name=APP_NAME,
-        css=BASE_CSS,
-        driver_name=session.get("driver_name", ""),
-        year=year,
-        month=month,
-        month_name=MONATE.get(month, str(month)),
-        data_row=data_row,
-        doc=doc,
-        fmt_hours=fmt_hours,
-        fmt_signed=fmt_signed,
+        app_name=APP_NAME, css=BASE_CSS, driver_name=session.get("driver_name", ""), year=year, month=month, month_name=MONATE.get(month, str(month)), data_row=data_row, doc=doc, fmt_hours=fmt_hours, fmt_signed=fmt_signed,
     )
 
 
@@ -450,26 +398,18 @@ def api_upsert_driver():
     password = payload.get("password")
     if not password:
         abort(400, "password fehlt")
-
     with db_conn() as conn:
         existing = conn.execute("SELECT * FROM drivers WHERE external_driver_id=?", (ext_id,)).fetchone()
         ts = now_iso()
         if existing:
             final_username = make_unique_username(conn, username, exclude_id=int(existing["id"]))
-            conn.execute(
-                "UPDATE drivers SET name=?, username=?, password_hash=?, is_active=1, updated_at=? WHERE id=?",
-                (name, final_username, generate_password_hash(password), ts, int(existing["id"])),
-            )
-            conn.commit()
+            conn.execute("UPDATE drivers SET name=?, username=?, password_hash=?, is_active=1, updated_at=? WHERE id=?", (name, final_username, generate_password_hash(password), ts, int(existing["id"])))
             row_id = int(existing["id"])
         else:
             final_username = make_unique_username(conn, username)
-            cur = conn.execute(
-                "INSERT INTO drivers (external_driver_id, name, username, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                (ext_id, name, final_username, generate_password_hash(password), ts, ts),
-            )
-            conn.commit()
+            cur = conn.execute("INSERT INTO drivers (external_driver_id, name, username, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", (ext_id, name, final_username, generate_password_hash(password), ts, ts))
             row_id = int(cur.lastrowid)
+        conn.commit()
     return jsonify({"ok": True, "driver_db_id": row_id, "username": final_username})
 
 
@@ -482,7 +422,6 @@ def api_upload_pdf():
     upload = request.files.get("file")
     if not upload or not upload.filename.lower().endswith(".pdf"):
         abort(400, "PDF-Datei fehlt")
-
     with db_conn() as conn:
         driver = conn.execute("SELECT * FROM drivers WHERE external_driver_id=? AND is_active=1", (ext_id,)).fetchone()
         if not driver:
@@ -495,20 +434,11 @@ def api_upload_pdf():
         abs_path = DATA_ROOT / relative_path
         upload.save(abs_path)
         ts = now_iso()
-        existing = conn.execute(
-            "SELECT id FROM documents WHERE driver_id=? AND year=? AND month=?",
-            (int(driver["id"]), year, month),
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM documents WHERE driver_id=? AND year=? AND month=?", (int(driver["id"]), year, month)).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE documents SET filename=?, original_filename=?, relative_path=?, uploaded_at=? WHERE id=?",
-                (safe_name, upload.filename, str(relative_path), ts, int(existing["id"])),
-            )
+            conn.execute("UPDATE documents SET filename=?, original_filename=?, relative_path=?, uploaded_at=? WHERE id=?", (safe_name, upload.filename, str(relative_path), ts, int(existing["id"])))
         else:
-            conn.execute(
-                "INSERT INTO documents (driver_id, year, month, filename, original_filename, relative_path, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (int(driver["id"]), year, month, safe_name, upload.filename, str(relative_path), ts),
-            )
+            conn.execute("INSERT INTO documents (driver_id, year, month, filename, original_filename, relative_path, uploaded_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (int(driver["id"]), year, month, safe_name, upload.filename, str(relative_path), ts))
         conn.commit()
     return jsonify({"ok": True, "stored_as": str(relative_path)})
 
@@ -520,41 +450,34 @@ def api_upsert_month_data():
     ext_id = int(payload["external_driver_id"])
     year = int(payload["year"])
     month = int(payload["month"])
-
     with db_conn() as conn:
-        driver = conn.execute(
-            "SELECT * FROM drivers WHERE external_driver_id=? AND is_active=1",
-            (ext_id,),
-        ).fetchone()
+        driver = conn.execute("SELECT * FROM drivers WHERE external_driver_id=? AND is_active=1", (ext_id,)).fetchone()
         if not driver:
             abort(400, "Fahrer nicht vorhanden")
         ts = now_iso()
+        worked_hours = float(payload.get("worked_hours", 0) or 0)
+        payroll_hours = float(payload.get("payroll_hours", 0) or 0)
+        v_hours = abs(float(payload.get("v_hours", 0) or 0))
+        bonus_hours = max(float(payload.get("bonus_hours", 0) or 0), 0.0)
+        deduction_hours = float(payload.get("deduction_hours", 0) or 0)
+        if deduction_hours > 0:
+            abort(400, "Abzüge müssen negativ sein.")
+        difference = compute_difference(worked_hours, payroll_hours, v_hours, bonus_hours, deduction_hours)
         values = (
-            float(payload.get("worked_hours", 0) or 0),
-            abs(float(payload.get("v_hours", 0) or 0)),
-            float(payload.get("adjustment_hours", 0) or 0),
-            str(payload.get("comment") or "").strip(),
-            float(payload.get("payroll_hours", 0) or 0),
-            float(payload.get("difference", 0) or 0),
-            float(payload.get("previous_balance", 0) or 0),
-            float(payload.get("new_balance", 0) or 0),
-            ts,
-            int(driver["id"]),
-            year,
-            month,
+            worked_hours, v_hours, 0.0, "", payroll_hours, difference,
+            float(payload.get("previous_balance", 0) or 0), float(payload.get("new_balance", 0) or 0), ts,
+            bonus_hours, str(payload.get("bonus_comment") or "").strip(), deduction_hours, str(payload.get("deduction_comment") or "").strip(),
+            int(driver["id"]), year, month,
         )
-        existing = conn.execute(
-            "SELECT id FROM monthly_data WHERE driver_id=? AND year=? AND month=?",
-            (int(driver["id"]), year, month),
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM monthly_data WHERE driver_id=? AND year=? AND month=?", (int(driver["id"]), year, month)).fetchone()
         if existing:
             conn.execute(
-                "UPDATE monthly_data SET worked_hours=?, v_hours=?, adjustment_hours=?, comment=?, payroll_hours=?, difference_hours=?, previous_balance=?, new_balance=?, updated_at=? WHERE driver_id=? AND year=? AND month=?",
+                "UPDATE monthly_data SET worked_hours=?, v_hours=?, adjustment_hours=?, comment=?, payroll_hours=?, difference_hours=?, previous_balance=?, new_balance=?, updated_at=?, bonus_hours=?, bonus_comment=?, deduction_hours=?, deduction_comment=? WHERE driver_id=? AND year=? AND month=?",
                 values,
             )
         else:
             conn.execute(
-                "INSERT INTO monthly_data (worked_hours, v_hours, adjustment_hours, comment, payroll_hours, difference_hours, previous_balance, new_balance, updated_at, driver_id, year, month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO monthly_data (worked_hours, v_hours, adjustment_hours, comment, payroll_hours, difference_hours, previous_balance, new_balance, updated_at, bonus_hours, bonus_comment, deduction_hours, deduction_comment, driver_id, year, month) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 values,
             )
         conn.commit()
@@ -566,37 +489,23 @@ def api_list_drivers():
     admin_required()
     with db_conn() as conn:
         rows = conn.execute("SELECT id, external_driver_id, name, username, is_active FROM drivers ORDER BY name COLLATE NOCASE ASC").fetchall()
-        return jsonify({"drivers": [dict(r) for r in rows]})
+    return jsonify({"drivers": [dict(r) for r in rows]})
 
 
 @app.get("/api/admin/list-month-data")
 def api_list_month_data():
     admin_required()
     with db_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT d.external_driver_id, m.year, m.month, m.updated_at
-            FROM monthly_data m
-            JOIN drivers d ON d.id = m.driver_id
-            ORDER BY d.external_driver_id, m.year, m.month
-            """
-        ).fetchall()
-        return jsonify({"items": [dict(r) for r in rows]})
+        rows = conn.execute("SELECT d.external_driver_id, m.year, m.month, m.updated_at FROM monthly_data m JOIN drivers d ON d.id = m.driver_id ORDER BY d.external_driver_id, m.year, m.month").fetchall()
+    return jsonify({"items": [dict(r) for r in rows]})
 
 
 @app.get("/api/admin/list-documents")
 def api_list_documents():
     admin_required()
     with db_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT d.external_driver_id, doc.year, doc.month, doc.relative_path, doc.original_filename
-            FROM documents doc
-            JOIN drivers d ON d.id = doc.driver_id
-            ORDER BY d.external_driver_id, doc.year, doc.month
-            """
-        ).fetchall()
-        return jsonify({"items": [dict(r) for r in rows]})
+        rows = conn.execute("SELECT d.external_driver_id, doc.year, doc.month, doc.relative_path, doc.original_filename FROM documents doc JOIN drivers d ON d.id = doc.driver_id ORDER BY d.external_driver_id, doc.year, doc.month").fetchall()
+    return jsonify({"items": [dict(r) for r in rows]})
 
 
 @app.post("/api/admin/delete-month-data")
@@ -610,10 +519,7 @@ def api_delete_month_data():
         driver = get_driver_by_external_id(conn, ext_id)
         if not driver:
             return jsonify({"ok": True, "deleted": False, "reason": "driver_not_found"})
-        conn.execute(
-            "DELETE FROM monthly_data WHERE driver_id=? AND year=? AND month=?",
-            (int(driver["id"]), year, month),
-        )
+        conn.execute("DELETE FROM monthly_data WHERE driver_id=? AND year=? AND month=?", (int(driver["id"]), year, month))
         conn.commit()
     return jsonify({"ok": True, "deleted": True})
 
@@ -629,10 +535,7 @@ def api_delete_document():
         driver = get_driver_by_external_id(conn, ext_id)
         if not driver:
             return jsonify({"ok": True, "deleted": False, "reason": "driver_not_found"})
-        doc = conn.execute(
-            "SELECT id, relative_path FROM documents WHERE driver_id=? AND year=? AND month=?",
-            (int(driver["id"]), year, month),
-        ).fetchone()
+        doc = conn.execute("SELECT id, relative_path FROM documents WHERE driver_id=? AND year=? AND month=?", (int(driver["id"]), year, month)).fetchone()
         if not doc:
             return jsonify({"ok": True, "deleted": False, "reason": "document_not_found"})
         abs_path = DATA_ROOT / doc["relative_path"]
