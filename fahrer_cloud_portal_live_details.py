@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
@@ -77,10 +78,21 @@ def get_month_data(conn: sqlite3.Connection, driver_db_id: int, year: int, month
     ).fetchone()
 
 
+def get_driver_by_external_id(conn: sqlite3.Connection, external_driver_id: int) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM drivers WHERE external_driver_id=?",
+        (external_driver_id,),
+    ).fetchone()
+
 
 def ensure_paths() -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
     FILES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def remove_tree_if_exists(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def db_conn() -> sqlite3.Connection:
@@ -551,6 +563,96 @@ def api_list_drivers():
     with db_conn() as conn:
         rows = conn.execute("SELECT id, external_driver_id, name, username, is_active FROM drivers ORDER BY name COLLATE NOCASE ASC").fetchall()
         return jsonify({"drivers": [dict(r) for r in rows]})
+
+
+@app.get("/api/admin/list-month-data")
+def api_list_month_data():
+    admin_required()
+    with db_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.external_driver_id, m.year, m.month, m.updated_at
+            FROM monthly_data m
+            JOIN drivers d ON d.id = m.driver_id
+            ORDER BY d.external_driver_id, m.year, m.month
+            """
+        ).fetchall()
+        return jsonify({"items": [dict(r) for r in rows]})
+
+
+@app.get("/api/admin/list-documents")
+def api_list_documents():
+    admin_required()
+    with db_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT d.external_driver_id, doc.year, doc.month, doc.relative_path, doc.original_filename
+            FROM documents doc
+            JOIN drivers d ON d.id = doc.driver_id
+            ORDER BY d.external_driver_id, doc.year, doc.month
+            """
+        ).fetchall()
+        return jsonify({"items": [dict(r) for r in rows]})
+
+
+@app.post("/api/admin/delete-month-data")
+def api_delete_month_data():
+    admin_required()
+    payload = request.get_json(force=True, silent=False)
+    ext_id = int(payload["external_driver_id"])
+    year = int(payload["year"])
+    month = int(payload["month"])
+    with db_conn() as conn:
+        driver = get_driver_by_external_id(conn, ext_id)
+        if not driver:
+            return jsonify({"ok": True, "deleted": False, "reason": "driver_not_found"})
+        conn.execute(
+            "DELETE FROM monthly_data WHERE driver_id=? AND year=? AND month=?",
+            (int(driver["id"]), year, month),
+        )
+        conn.commit()
+    return jsonify({"ok": True, "deleted": True})
+
+
+@app.post("/api/admin/delete-document")
+def api_delete_document():
+    admin_required()
+    payload = request.get_json(force=True, silent=False)
+    ext_id = int(payload["external_driver_id"])
+    year = int(payload["year"])
+    month = int(payload["month"])
+    with db_conn() as conn:
+        driver = get_driver_by_external_id(conn, ext_id)
+        if not driver:
+            return jsonify({"ok": True, "deleted": False, "reason": "driver_not_found"})
+        doc = conn.execute(
+            "SELECT id, relative_path FROM documents WHERE driver_id=? AND year=? AND month=?",
+            (int(driver["id"]), year, month),
+        ).fetchone()
+        if not doc:
+            return jsonify({"ok": True, "deleted": False, "reason": "document_not_found"})
+        abs_path = DATA_ROOT / doc["relative_path"]
+        if abs_path.exists():
+            abs_path.unlink()
+        conn.execute("DELETE FROM documents WHERE id=?", (int(doc["id"]),))
+        conn.commit()
+    return jsonify({"ok": True, "deleted": True})
+
+
+@app.post("/api/admin/delete-driver")
+def api_delete_driver():
+    admin_required()
+    payload = request.get_json(force=True, silent=False)
+    ext_id = int(payload["external_driver_id"])
+    with db_conn() as conn:
+        driver = get_driver_by_external_id(conn, ext_id)
+        if not driver:
+            return jsonify({"ok": True, "deleted": False, "reason": "driver_not_found"})
+        driver_slug = slugify(driver["name"]) + f"-{driver['id']}"
+        remove_tree_if_exists(FILES_DIR / driver_slug)
+        conn.execute("DELETE FROM drivers WHERE id=?", (int(driver["id"]),))
+        conn.commit()
+    return jsonify({"ok": True, "deleted": True})
 
 
 if __name__ == "__main__":
