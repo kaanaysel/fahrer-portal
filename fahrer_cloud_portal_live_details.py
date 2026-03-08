@@ -112,6 +112,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                starting_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -157,6 +158,7 @@ def init_db() -> None:
                 name TEXT NOT NULL,
                 username TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
+                starting_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -194,6 +196,20 @@ def init_db() -> None:
                 UNIQUE(driver_id, year, month)
             );
             """)
+
+
+def ensure_driver_columns() -> None:
+    with db_cursor() as cur:
+        if is_postgres():
+            try:
+                cur.execute("ALTER TABLE drivers ADD COLUMN IF NOT EXISTS starting_balance DOUBLE PRECISION NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+        else:
+            cur.execute("PRAGMA table_info(drivers)")
+            cols = [r[1] if isinstance(r, tuple) else r["name"] for r in cur.fetchall()]
+            if "starting_balance" not in cols:
+                cur.execute("ALTER TABLE drivers ADD COLUMN starting_balance REAL NOT NULL DEFAULT 0")
 
 def slugify(text: str) -> str:
     repl = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss", "Ä": "ae", "Ö": "oe", "Ü": "ue"}
@@ -385,6 +401,7 @@ def api_upsert_driver():
     name = str(payload["name"]).strip()
     username = str(payload.get("username") or slugify(name)).strip()
     password = payload.get("password")
+    starting_balance = round(float(payload.get("starting_balance", 0.0) or 0.0), 2)
     if not password:
         abort(400, "password fehlt")
     with db_cursor() as cur:
@@ -393,14 +410,14 @@ def api_upsert_driver():
         ts = now_iso()
         if existing:
             final_username = make_unique_username(cur, username, exclude_id=int(existing["id"]))
-            cur.execute(qmark("UPDATE drivers SET name=?, username=?, password_hash=?, is_active=1, updated_at=? WHERE id=?"),
-                        (name, final_username, generate_password_hash(password), ts, int(existing["id"])))
+            cur.execute(qmark("UPDATE drivers SET name=?, username=?, password_hash=?, starting_balance=?, is_active=1, updated_at=? WHERE id=?"),
+                        (name, final_username, generate_password_hash(password), starting_balance, ts, int(existing["id"])))
             row_id = int(existing["id"])
         else:
             final_username = make_unique_username(cur, username)
-            cur.execute(qmark("INSERT INTO drivers (external_driver_id, name, username, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?) RETURNING id") if is_postgres()
-                        else qmark("INSERT INTO drivers (external_driver_id, name, username, password_hash, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)"),
-                        (ext_id, name, final_username, generate_password_hash(password), ts, ts))
+            cur.execute(qmark("INSERT INTO drivers (external_driver_id, name, username, password_hash, starting_balance, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?) RETURNING id") if is_postgres()
+                        else qmark("INSERT INTO drivers (external_driver_id, name, username, password_hash, starting_balance, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)"),
+                        (ext_id, name, final_username, generate_password_hash(password), starting_balance, ts, ts))
             if is_postgres():
                 row_id = int(cur.fetchone()[0])
             else:
@@ -411,7 +428,7 @@ def api_upsert_driver():
 def api_drivers():
     admin_required()
     with db_cursor() as cur:
-        cur.execute("SELECT id, external_driver_id, name, username, is_active FROM drivers ORDER BY name")
+        cur.execute("SELECT id, external_driver_id, name, username, starting_balance, is_active FROM drivers ORDER BY name")
         return jsonify({"drivers": fetchall_dict(cur)})
 
 @app.delete("/api/admin/drivers/<int:external_driver_id>")
@@ -435,10 +452,10 @@ def api_upsert_month():
             abort(400, "Fahrer nicht vorhanden")
         vals = (
             int(driver["id"]), year, month,
-            float(payload.get("stunden", 0)), float(payload.get("abrechnung", 0)), float(payload.get("v", 0)),
-            float(payload.get("zuschuesse", 0)), str(payload.get("zuschuss_kommentar", "")),
-            float(payload.get("abzuege", 0)), str(payload.get("abzug_kommentar", "")),
-            float(payload.get("differenz", 0)), float(payload.get("aktueller_stand", 0)), float(payload.get("neuer_stand", 0)), ts
+            float(payload.get("stunden", payload.get("worked_hours", 0)) or 0), float(payload.get("abrechnung", payload.get("payroll_hours", 0)) or 0), float(payload.get("v", payload.get("v_hours", 0)) or 0),
+            float(payload.get("zuschuesse", payload.get("bonus_hours", 0)) or 0), str(payload.get("zuschuss_kommentar", payload.get("bonus_comment", "")) or ""),
+            float(payload.get("abzuege", payload.get("deduction_hours", 0)) or 0), str(payload.get("abzug_kommentar", payload.get("deduction_comment", "")) or ""),
+            float(payload.get("differenz", payload.get("difference", 0)) or 0), float(payload.get("aktueller_stand", payload.get("previous_balance", 0)) or 0), float(payload.get("neuer_stand", payload.get("new_balance", 0)) or 0), ts
         )
         cur.execute(qmark("SELECT id FROM month_data WHERE driver_id=? AND year=? AND month=?"), (int(driver["id"]), year, month))
         existing = fetchone_dict(cur)
@@ -496,6 +513,7 @@ def api_upload_pdf():
 
 if __name__ == "__main__":
     init_db()
+    ensure_driver_columns()
     port = int(os.environ.get("PORT", "5050"))
     app.run(host="0.0.0.0", port=port, debug=False)
 
