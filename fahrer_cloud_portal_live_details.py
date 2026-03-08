@@ -28,6 +28,60 @@ SECRET_KEY = os.environ.get("PORTAL_SECRET_KEY", "dev-secret-change-me")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 app = Flask(__name__)
+def ensure_tables():
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        return
+
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS drivers (
+                id SERIAL PRIMARY KEY,
+                external_driver_id INTEGER UNIQUE,
+                name TEXT,
+                username TEXT,
+                password_hash TEXT,
+                starting_balance DOUBLE PRECISION DEFAULT 0,
+                is_active BOOLEAN DEFAULT TRUE
+            )
+            """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS month_data (
+                id SERIAL PRIMARY KEY,
+                external_driver_id INTEGER,
+                year INTEGER,
+                month INTEGER,
+                worked_hours DOUBLE PRECISION,
+                payroll_hours DOUBLE PRECISION,
+                v_hours DOUBLE PRECISION,
+                bonus_hours DOUBLE PRECISION,
+                bonus_comment TEXT,
+                deduction_hours DOUBLE PRECISION,
+                deduction_comment TEXT,
+                difference DOUBLE PRECISION,
+                previous_balance DOUBLE PRECISION,
+                new_balance DOUBLE PRECISION
+            )
+            """)
+
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id SERIAL PRIMARY KEY,
+                external_driver_id INTEGER,
+                year INTEGER,
+                month INTEGER,
+                file_name TEXT,
+                file_path TEXT
+            )
+            """)
+
+        conn.commit()
+
+
+ensure_tables()
 app.secret_key = SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
