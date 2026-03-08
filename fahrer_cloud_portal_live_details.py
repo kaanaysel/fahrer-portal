@@ -332,7 +332,7 @@ def months_for_year(year: int):
                 <div class="note" style="margin-bottom:10px;">Datei: {{ d['original_filename'] }}</div>
                 <div class="actions">
                   <a class="btn" href="{{ url_for('month_detail', year=d['year'], month=d['month']) }}">Details ansehen</a>
-                  <a class="btn primary" href="{{ url_for('download_pdf', document_id=d['id']) }}">PDF öffnen</a>
+                  <a class="btn primary" href="{{ url_for('download_pdf', document_id=d['id'], v=d['uploaded_at']) }}">PDF öffnen</a>
                 </div>
               </div>
               {% endfor %}
@@ -401,7 +401,7 @@ def month_detail(year: int, month: int):
           {% if doc %}
           <div class="card">
             <h2 style="margin-top:0;">PDF</h2>
-            <a class="btn primary" style="width:auto;padding:10px 14px;" href="{{ url_for('download_pdf', document_id=doc['id']) }}">PDF öffnen</a>
+            <a class="btn primary" style="width:auto;padding:10px 14px;" href="{{ url_for('download_pdf', document_id=doc['id'], v=doc['uploaded_at']) }}">PDF öffnen</a>
           </div>
           {% endif %}
         </div></body></html>
@@ -433,7 +433,11 @@ def download_pdf(document_id: int):
         path = DATA_ROOT / doc["relative_path"]
         if not path.exists():
             abort(404)
-        return send_file(path, mimetype="application/pdf", as_attachment=False, download_name=doc["original_filename"])
+        response = send_file(path, mimetype="application/pdf", as_attachment=False, download_name=doc["original_filename"])
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 @app.post("/api/admin/upsert-driver")
