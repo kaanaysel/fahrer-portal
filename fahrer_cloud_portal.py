@@ -514,9 +514,7 @@ def api_upload_pdf():
     return jsonify({"ok": True})
 @app.route("/setup-db")
 def setup_db():
-    database_url = os.environ.get("DATABASE_URL", "").strip()
-    if not database_url:
-        return {"ok": False, "error": "DATABASE_URL fehlt"}, 500
+    return {"error": "setup-db disabled"}, 403
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
