@@ -516,4 +516,55 @@ if __name__ == "__main__":
     ensure_driver_columns()
     port = int(os.environ.get("PORT", "5050"))
     app.run(host="0.0.0.0", port=port, debug=False)
+@app.route("/setup-db")
+def setup_db():
+    conn = get_db()
+    cur = conn.cursor()
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS drivers (
+        id SERIAL PRIMARY KEY,
+        external_driver_id INTEGER UNIQUE,
+        name TEXT,
+        username TEXT,
+        password_hash TEXT,
+        starting_balance DOUBLE PRECISION DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS month_data (
+        id SERIAL PRIMARY KEY,
+        external_driver_id INTEGER,
+        year INTEGER,
+        month INTEGER,
+        worked_hours DOUBLE PRECISION,
+        payroll_hours DOUBLE PRECISION,
+        v_hours DOUBLE PRECISION,
+        bonus_hours DOUBLE PRECISION,
+        bonus_comment TEXT,
+        deduction_hours DOUBLE PRECISION,
+        deduction_comment TEXT,
+        difference DOUBLE PRECISION,
+        previous_balance DOUBLE PRECISION,
+        new_balance DOUBLE PRECISION
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS documents (
+        id SERIAL PRIMARY KEY,
+        external_driver_id INTEGER,
+        year INTEGER,
+        month INTEGER,
+        file_name TEXT,
+        file_path TEXT
+    );
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"status": "database tables created"}
