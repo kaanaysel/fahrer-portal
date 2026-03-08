@@ -15,8 +15,6 @@ from flask import Flask, abort, jsonify, redirect, render_template_string, reque
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 import os
-os.environ["ADMIN_API_TOKEN"] = "mein_geheimer_token_123"
-os.environ["PORTAL_SECRET_KEY"] = "mein_geheimes_passwort_456"
 
 APP_NAME = "Fahrer-Cloud-Portal"
 DATA_ROOT = Path(os.environ.get("PORTAL_DATA_DIR", "/opt/render/project/src/data")).resolve()
