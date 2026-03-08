@@ -14,8 +14,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-os.environ["PORTAL_BASE_URL"] = "http://127.0.0.1:5050"
-os.environ["ADMIN_API_TOKEN"] = "mein_geheimer_token_123"
+os.environ["PORTAL_BASE_URL"] = "https://fahrer-portal.onrender.com"
+os.environ["ADMIN_API_TOKEN"] = "mein_super_token_123"
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCAL_DATA_DIR = BASE_DIR / "stunden_daten"
