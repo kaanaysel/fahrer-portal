@@ -329,8 +329,8 @@ def months_for_year(year: int):
     {% for d in docs %}
       <div class="month-item">
         <strong>{{ months[d['month']] }} {{ d['year'] }}</strong>
-        <div class="muted">Differenz: {{ '%+.2f'|format(d['differenz']).replace('.', ',') }}</div>
-        <div class="muted">Neuer Stand: {{ '%+.2f'|format(d['neuer_stand']).replace('.', ',') }}</div>
+        <div class="muted">Differenz: {{ fmt_signed(d['differenz']) }}</div>
+        <div class="muted">Neuer Stand: {{ fmt_signed(d['neuer_stand']) }}</div>
         <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
           <a class="btn primary" href="{{ url_for('month_details', year=d['year'], month=d['month']) }}">Details</a>
           {% if d['document_id'] %}<a class="btn" href="{{ url_for('download_pdf', document_id=d['document_id'], v=d['uploaded_at']) }}">PDF</a>{% endif %}
@@ -338,7 +338,7 @@ def months_for_year(year: int):
       </div>
     {% endfor %}
     </div></div></div></body></html>
-    """, app_name=APP_NAME, css=BASE_CSS, driver_name=session.get("driver_name",""), year=year, docs=docs, months=MONATE)
+    """, app_name=APP_NAME, css=BASE_CSS, driver_name=session.get("driver_name",""), year=year, docs=docs, months=MONATE, fmt_signed=fmt_signed)
 
 @app.get("/monat/<int:year>/<int:month>")
 @login_required
