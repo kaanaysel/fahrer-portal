@@ -28,60 +28,7 @@ SECRET_KEY = os.environ.get("PORTAL_SECRET_KEY", "dev-secret-change-me")
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 app = Flask(__name__)
-def ensure_tables():
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        return
 
-    with psycopg.connect(database_url) as conn:
-        with conn.cursor() as cur:
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS drivers (
-                id SERIAL PRIMARY KEY,
-                external_driver_id INTEGER UNIQUE,
-                name TEXT,
-                username TEXT,
-                password_hash TEXT,
-                starting_balance DOUBLE PRECISION DEFAULT 0,
-                is_active BOOLEAN DEFAULT TRUE
-            )
-            """)
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS month_data (
-                id SERIAL PRIMARY KEY,
-                external_driver_id INTEGER,
-                year INTEGER,
-                month INTEGER,
-                worked_hours DOUBLE PRECISION,
-                payroll_hours DOUBLE PRECISION,
-                v_hours DOUBLE PRECISION,
-                bonus_hours DOUBLE PRECISION,
-                bonus_comment TEXT,
-                deduction_hours DOUBLE PRECISION,
-                deduction_comment TEXT,
-                difference DOUBLE PRECISION,
-                previous_balance DOUBLE PRECISION,
-                new_balance DOUBLE PRECISION
-            )
-            """)
-
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS documents (
-                id SERIAL PRIMARY KEY,
-                external_driver_id INTEGER,
-                year INTEGER,
-                month INTEGER,
-                file_name TEXT,
-                file_path TEXT
-            )
-            """)
-
-        conn.commit()
-
-
-ensure_tables()
 app.secret_key = SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
@@ -565,12 +512,6 @@ def api_upload_pdf():
             cur.execute(qmark("INSERT INTO documents (driver_id, year, month, original_filename, pdf_bytes, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)"),
                         (int(driver["id"]), year, month, upload.filename, pdf_bytes, ts))
     return jsonify({"ok": True})
-
-if __name__ == "__main__":
-    init_db()
-    ensure_driver_columns()
-    port = int(os.environ.get("PORT", "5050"))
-    app.run(host="0.0.0.0", port=port, debug=False)
 @app.route("/setup-db")
 def setup_db():
     database_url = os.environ.get("DATABASE_URL", "").strip()
@@ -580,54 +521,58 @@ def setup_db():
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS drivers (
+                CREATE TABLE IF NOT EXISTS drivers(
                     id SERIAL PRIMARY KEY,
                     external_driver_id INTEGER UNIQUE NOT NULL,
                     name TEXT NOT NULL,
-                    username TEXT,
-                    password_hash TEXT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
                     starting_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW()
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
             """)
 
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS month_data (
+                CREATE TABLE IF NOT EXISTS month_data(
                     id SERIAL PRIMARY KEY,
-                    external_driver_id INTEGER NOT NULL,
+                    driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
                     year INTEGER NOT NULL,
                     month INTEGER NOT NULL,
-                    worked_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    payroll_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    v_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    bonus_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    bonus_comment TEXT NOT NULL DEFAULT '',
-                    deduction_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    deduction_comment TEXT NOT NULL DEFAULT '',
-                    difference DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    previous_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    new_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    updated_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE (external_driver_id, year, month)
+                    stunden DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    abrechnung DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    v DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    zuschuesse DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    zuschuss_kommentar TEXT NOT NULL DEFAULT '',
+                    abzuege DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    abzug_kommentar TEXT NOT NULL DEFAULT '',
+                    differenz DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    aktueller_stand DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    neuer_stand DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(driver_id, year, month)
                 );
             """)
 
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
+                CREATE TABLE IF NOT EXISTS documents(
                     id SERIAL PRIMARY KEY,
-                    external_driver_id INTEGER NOT NULL,
+                    driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
                     year INTEGER NOT NULL,
                     month INTEGER NOT NULL,
-                    file_name TEXT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    uploaded_at TIMESTAMP DEFAULT NOW(),
-                    UNIQUE (external_driver_id, year, month)
+                    original_filename TEXT NOT NULL,
+                    pdf_bytes BYTEA NOT NULL,
+                    uploaded_at TEXT NOT NULL,
+                    UNIQUE(driver_id, year, month)
                 );
             """)
 
         conn.commit()
 
     return {"ok": True, "status": "database tables created"}
+if __name__ == "__main__":
+    init_db()
+    ensure_driver_columns()
+    port = int(os.environ.get("PORT", "5050"))
+    app.run(host="0.0.0.0", port=port, debug=False)
